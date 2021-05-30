@@ -5,11 +5,11 @@ services:
     build:
       context: .
       target: sylius_php
-      cache_from:
-        - quay.io/sylius/php:latest
-        - quay.io/sylius/nodejs:latest
-        - quay.io/sylius/nginx:latest
-    image: quay.io/sylius/php:latest
+      #      cache_from:
+      #  - quay.io/sylius/php:latest
+      #  - quay.io/sylius/nodejs:latest
+      #  - quay.io/sylius/nginx:latest
+      #  image: quay.io/sylius/php:latest
     depends_on:
       - mysql
     environment:
