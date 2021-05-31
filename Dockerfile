@@ -12,6 +12,7 @@ ARG PHP_INI_DIR=/usr/local/etc/php/php.ini
 
 FROM php:${PHP_VERSION}-fpm-alpine AS symfony_php
 
+WORKDIR /srv/sylius
 
 # persistent / runtime deps
 RUN apk add --no-cache \
