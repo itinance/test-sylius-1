@@ -140,7 +140,7 @@ RUN xcaddy build \
 
 FROM caddy:${CADDY_VERSION} AS symfony_caddy
 
-WORKDIR /srv/app
+WORKDIR /srv/sylius
 
 COPY --from=dunglas/mercure:v0.11 /srv/public /srv/mercure-assets/
 COPY --from=symfony_caddy_builder /usr/bin/caddy /usr/bin/caddy
