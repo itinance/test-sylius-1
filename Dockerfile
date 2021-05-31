@@ -6,7 +6,12 @@ ARG CADDY_VERSION=2
 ARG NODE_VERSION=10
 ARG NGINX_VERSION=1.16
 
-FROM php:${PHP_VERSION}-fpm-alpine AS sylius_php
+ARG PHP_MEMORY_LIMIT=-1
+
+ARG PHP_INI_DIR=/usr/local/etc/php/php.ini
+
+FROM php:${PHP_VERSION}-fpm-alpine AS symfony_php
+
 
 # persistent / runtime deps
 RUN apk add --no-cache \
@@ -61,9 +66,13 @@ RUN set -eux; \
 	\
 	apk del .build-deps
 
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
-COPY docker/php/php.ini /usr/local/etc/php/php.ini
-COPY docker/php/php-cli.ini /usr/local/etc/php/php-cli.ini
+COPY docker/php/docker-healthcheck.sh /usr/local/bin/docker-healthcheck
+RUN chmod +x /usr/local/bin/docker-healthcheck
+
+HEALTHCHECK --interval=10s --timeout=3s --retries=3 CMD ["docker-healthcheck"]
+
+RUN ln -s $PHP_INI_DIR/php.ini-production $PHP_INI_DIR/php.ini
+COPY docker/php/conf.d/symfony.prod.ini $PHP_INI_DIR/conf.d/symfony.ini
 
 COPY docker/php/php-fpm.d/zz-docker.conf /usr/local/etc/php-fpm.d/zz-docker.conf
 
@@ -72,13 +81,12 @@ RUN chmod +x /usr/local/bin/docker-entrypoint
 
 VOLUME /var/run/php
 
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+
 # https://getcomposer.org/doc/03-cli.md#composer-allow-superuser
 ENV COMPOSER_ALLOW_SUPERUSER=1
-RUN set -eux; \
-	composer clear-cache
 ENV PATH="${PATH}:/root/.composer/vendor/bin"
-
-WORKDIR /srv/sylius
 
 # build for production
 ARG APP_ENV=prod
@@ -86,8 +94,8 @@ ARG APP_ENV=prod
 # prevent the reinstallation of vendors at every changes in the source code
 COPY composer.json composer.loc* symfony.lock ./
 RUN set -eux; \
-	composer install --prefer-dist --no-autoloader --no-scripts --no-progress --no-suggest; \
-	composer clear-cache
+	php -d memory_limit=-1 /usr/bin/composer install --prefer-dist --no-autoloader --no-scripts --no-progress --no-suggest;
+
 
 # copy only specifically what we need
 COPY .env .env.prod .env.test .env.test_cached ./
@@ -100,11 +108,17 @@ COPY translations translations/
 
 RUN set -eux; \
 	mkdir -p var/cache var/log; \
-	composer dump-autoload --classmap-authoritative; \
-	APP_SECRET='' composer run-script post-install-cmd; \
+	php -d memory_limit=-1 /usr/bin/composer -vv dump-autoload --classmap-authoritative;
+
+
+RUN set -eux; \
+	php -d memory_limit=-1 /usr/bin/composer -vv --no-dev run-script --no-dev post-install-cmd;
+
+RUN set -eux; \
 	chmod +x bin/console; sync; \
 	bin/console sylius:install:assets; \
 	bin/console sylius:theme:assets:install public
+
 VOLUME /srv/sylius/var
 
 VOLUME /srv/sylius/public/media
@@ -114,51 +128,6 @@ RUN chmod +x /usr/local/bin/docker-entrypoint
 
 ENTRYPOINT ["docker-entrypoint"]
 CMD ["php-fpm"]
-
-FROM node:${NODE_VERSION}-alpine AS sylius_nodejs
-
-WORKDIR /srv/sylius
-
-RUN set -eux; \
-	apk add --no-cache --virtual .build-deps \
-		g++ \
-		gcc \
-		git \
-		make \
-		python \
-	;
-
-# prevent the reinstallation of vendors at every changes in the source code
-COPY package.json yarn.lock ./
-RUN set -eux; \
-	yarn install; \
-	yarn cache clean
-
-COPY --from=sylius_php /srv/sylius/vendor/sylius/sylius/src/Sylius/Bundle/UiBundle/Resources/private vendor/sylius/sylius/src/Sylius/Bundle/UiBundle/Resources/private/
-COPY --from=sylius_php /srv/sylius/vendor/sylius/sylius/src/Sylius/Bundle/AdminBundle/Resources/private vendor/sylius/sylius/src/Sylius/Bundle/AdminBundle/Resources/private/
-COPY --from=sylius_php /srv/sylius/vendor/sylius/sylius/src/Sylius/Bundle/ShopBundle/Resources/private vendor/sylius/sylius/src/Sylius/Bundle/ShopBundle/Resources/private/
-
-COPY --from=sylius_php /srv/sylius/vendor/sylius/sylius/src/Sylius/Bundle/AdminBundle/gulpfile.babel.js vendor/sylius/sylius/src/Sylius/Bundle/AdminBundle/gulpfile.babel.js
-COPY --from=sylius_php /srv/sylius/vendor/sylius/sylius/src/Sylius/Bundle/ShopBundle/gulpfile.babel.js vendor/sylius/sylius/src/Sylius/Bundle/ShopBundle/gulpfile.babel.js
-
-COPY gulpfile.babel.js .babelrc ./
-RUN set -eux; \
-	GULP_ENV=prod yarn build
-
-COPY docker/nodejs/docker-entrypoint.sh /usr/local/bin/docker-entrypoint
-RUN chmod +x /usr/local/bin/docker-entrypoint
-
-ENTRYPOINT ["docker-entrypoint"]
-CMD ["yarn", "watch"]
-
-FROM nginx:${NGINX_VERSION}-alpine AS sylius_nginx
-
-COPY docker/nginx/conf.d/default.conf /etc/nginx/conf.d/
-
-WORKDIR /srv/sylius
-
-COPY --from=sylius_php /srv/sylius/public public/
-COPY --from=sylius_nodejs /srv/sylius/public public/
 
 FROM caddy:${CADDY_VERSION}-builder-alpine AS symfony_caddy_builder
 
@@ -174,5 +143,5 @@ WORKDIR /srv/app
 
 COPY --from=dunglas/mercure:v0.11 /srv/public /srv/mercure-assets/
 COPY --from=symfony_caddy_builder /usr/bin/caddy /usr/bin/caddy
-COPY --from=sylius_php /srv/sylius/public public/
+COPY --from=symfony_php /srv/sylius/public public/
 COPY docker/caddy/Caddyfile /etc/caddy/Caddyfile
